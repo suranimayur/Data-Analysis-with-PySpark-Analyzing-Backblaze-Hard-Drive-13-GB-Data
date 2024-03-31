@@ -1,1 +1,223 @@
 
+from functools import partial,reduce
+
+import pyspark.sql.functions as F
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType
+from pyspark.sql.session import SparkSession
+
+spark = SparkSession.builder.appName("Basic_Data_Types").getOrCreate()
+
+data_directories = [
+    '/home/surani/python_projects/DataAnalysisWithPythonAndPySpark/code/Ch07/backblaze/data_Q1_2019/*.csv',
+    '/home/surani/python_projects/DataAnalysisWithPythonAndPySpark/code/Ch07/backblaze/data_Q2_2019/*.csv',
+    '/home/surani/python_projects/DataAnalysisWithPythonAndPySpark/code/Ch07/backblaze/data_Q3_2019/*.csv',
+    '/home/surani/python_projects/DataAnalysisWithPythonAndPySpark/code/Ch07/backblaze/data_Q4_2019/*.csv',
+]
+## DATA_DIRECTORY = './home/surani/python_projects/DataAnalysisWithPythonAndPySpark/code/Ch07/backblaze'
+
+
+'''data = [
+spark.read.csv(DATA_DIRECTORY + file, header=True, inferSchema=True)
+for file in DATA_FILES
+]'''
+
+data = spark.read.csv(data_directories,inferSchema=True,header=True)
+
+data.printSchema()
+
+data.show(5)
+
+scolumns = [s for s in data.columns]
+
+len(scolumns)
+len(set(scolumns))
+
+common_columns = [s for s in data.columns]
+
+
+assert set(["model", "capacity_bytes", "date", "failure"]).issubset(
+set(scolumns)
+)
+
+full_data = data
+
+full_data.printSchema()
+
+full_data.show(5)
+
+## Using SQL-style expressions in PySpark
+
+'''
+Three methods accept SQL-type statements: select Expr(), expr(), and where()/filter(). 
+
+In this section, we use SQL-style expressions when appropriate to showcase when it makes sense to fuse both languages. At the end
+of this section, we have code that
+
+ Selects only the useful columns for our query
+ Gets our drive capacity in gigabytes
+ Computes the drive_days and failures data frames
+ Joins the two data frames into a summarized one and computes the failure rate
+
+'''
+## Processing our data so it’s ready for the query function
+
+full_data = full_data.selectExpr(
+    'model',"capacity_bytes/pow(1024,3) capacity_GB",
+    "date",
+    "failure"
+)
+
+full_data.show(5)
+
+full_data.count()
+
+drive_days = full_data.groupBy("model",'capacity_GB').agg(
+    F.count("*").alias("drive_days")
+)
+
+drive_days.show(5)
+
+failures = (
+    full_data.where(F.col("failure")==1)
+    .groupBy("model","capacity_GB")
+    .agg(F.count('*').alias("failures"))
+)
+
+summarized_data = (
+    drive_days.join(failures,on=["model","capacity_GB"],how='left')
+    .fillna(0.0,["failures"])
+    .selectExpr("model","capacity_GB","failures / drive_days failure_rate")
+    .cache()
+)
+summarized_data.show(5)
+
+'''
+selectExpr() is just like the select() method with the exception that it will pro-
+cess SQL-style operations.
+
+'''
+
+## Replacing selectExpr() with a regular select()
+
+full_data = full_data.select(
+    F.col("model"),
+    (F.col("capacity_GB")/ F.pow(F.lit(1024),3)).alias("capacity_GB"),
+    F.col("date"),
+    F.col("failure")
+)
+
+full_data.show(5)
+
+full_data.count()
+
+## Using a SQL expression in our failures data frame code
+
+failures = (
+    full_data.where("failure = 1")
+    .groupBy("model","capacity_GB")
+    .agg(F.expr("count(*) failures"))
+)
+
+failures.show()
+
+failures.count()
+
+'''
+This time, I use string interpolation in conjunction with between. This doesn’t save
+many key strokes, but it’s easy to understand, and you don’t get as much line noise as
+when using the data.capacity_GB.between(capacity_min, capacity_max) (if you
+prefer using the column function, you can also use this syntax: F.col("capacity_GB")
+.between(capacity_min, capacity_max)).
+
+'''
+
+## The most_reliable_drive_for_capacity() function
+
+def most_reliable_drive_for_capacity(data,capacity_GB = 2048,precision=0.25,top_n = 3):
+    """
+    Return the most_reliable_drive_for_capacity
+
+    Args:
+        data (_type_): _description_
+        capacity_GB (int, optional): _description_. Defaults to 2048.
+        precision (float, optional): _description_. Defaults to 0.25.
+        top_n (int, optional): _description_. Defaults to 3.
+    
+    Given a capacity in GB and precision as decimal number, we keep the N drivers where:
+    
+    - the capacity is between (capacity*1(1+precision)),capacity*(1+precision)
+    - the precision is lower
+    
+    """
+    capacity_min = capacity_GB /(1 + precision)
+    capacity_max = capacity_GB * (1 + precision)
+
+    answer = (
+        data.where(f"capacity_GB between {capacity_min} and {capacity_max}")
+        .orderBy("failure_rate","capacity_GB",ascending=[True,False])
+        .limit(top_n)
+    )
+    
+    return answer
+
+
+most_reliable_drive_for_capacity(summarized_data,capacity_GB=2024,precision=0.25,top_n = 3)
+
+
+
+
+def most_reliable_drive_for_capacity(data, capacity_GB=2048, precision=0.25, top_n=3):
+    """
+    Return the most reliable drives for a given capacity.
+
+    Args:
+        data (DataFrame): The DataFrame containing drive data.
+        capacity_GB (int, optional): The capacity in GB. Defaults to 2048.
+        precision (float, optional): The precision as a decimal number. Defaults to 0.25.
+        top_n (int, optional): The number of drives to return. Defaults to 3.
+    
+    Returns:
+        DataFrame: The DataFrame containing the most reliable drives for the given capacity.
+    """
+    capacity_min = capacity_GB / (1 + precision)
+    capacity_max = capacity_GB * (1 + precision)
+
+    # Check if columns are present in the DataFrame
+    required_columns = ["capacity_GB", "failure_rate"]
+    missing_columns = [col for col in required_columns if col not in data.columns]
+
+    if missing_columns:
+        raise ValueError(f"Missing columns in DataFrame: {missing_columns}")
+
+    answer = (
+        data.where(f"capacity_GB between {capacity_min} and {capacity_max}")
+            .orderBy("failure_rate", ascending=[True,False])
+            .limit(top_n)
+    )
+
+    return answer.show()
+
+full_data.show(5)
+
+most_reliable_drive_for_capacity(summarized_data, capacity_GB=1124,precision=0.25,top_n=3)
+summarized_data.show(5)
+summarized_data.count()
+
+## Summary
+
+'''
+*  Spark provides a SQL API for data manipulation. This API supports ANSI SQL.
+*  Spark (and PySpark, by extension) borrows a lot of vocabulary and expected functionality from the way SQL manipulates tables.
+    This is especially evident since the data manipulation module is called pyspark.sql.
+*  PySpark’s data frames need to be registered as views or tables before they can be queried with Spark SQL. You can give them a different name than the data
+    frame you’re registering.
+*  PySpark’s own data frame manipulation methods and functions borrow SQL functionality, for the most part. Some exceptions, such as union(), are present
+    and documented in the API.
+*  Spark SQL queries can be inserted in a PySpark program through the spark.sql function, where spark is the running SparkSession.
+*  Spark SQL table references are kept in a Catalog, which contains the metadata for all tables accessible to Spark SQL.
+*  PySpark will accept SQL-style clauses in where(), expr(), and selectExpr(),which can simplify the syntax for complex filtering and selection.
+*  PySpark will accept SQL-style expressions in selectExpr(), which can simplify the syntax for complex filtering and selection.
+*  The most_reliable_drive_for_capacity() function returns a DataFrame containing the most reliable drives for a given capacity.
+   When using Spark SQL queries with user-provided input,
+
+'''
