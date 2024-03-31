@@ -12,6 +12,9 @@ Scalability: PySpark's distributed computing capabilities enable seamless scalab
 
 PySpark offers a user-friendly interface for big data processing and analytics, making it an ideal choice for handling diverse datasets like Backblaze hard drive data. With PySpark, users can harness the power of distributed computing while leveraging familiar SQL-like syntax and DataFrame operations for efficient data manipulation and analysis.
 
+
+## Code snipper
+
 from functools import partial, reduce
 import pyspark.sql.functions as F
 from pyspark.sql.session import SparkSession
